@@ -52,6 +52,70 @@ bool needPassByRef(jl_datatype_t *ty, AttrBuilder &ab) override
 
 Type *preferred_llvm_type(jl_datatype_t *ty, bool isret) const override
 {
+    // Float16 -> half
+    if (ty == jl_float16_type)
+        return Type::getHalfTy(jl_LLVMContext);
+
+    // Float32 -> float
+    if (ty == jl_float32_type)
+        return Type::getFloatTy(jl_LLVMContext);
+
+    // NTuple{N, T} -> [N x T]
+    // NTuple{N, VecElement{T}} -> <N x T>
+    // Tuple{T, U, ...} -> {T, U}
+    if (jl_is_tuple_type(ty)) {
+        auto num_params = jl_nparams(ty);
+        bool all_equal = true;
+
+        auto first_ty = jl_tparam(ty, 0);
+
+        for (size_t i = 0; i < num_params && all_equal; ++i) {
+            all_equal = jl_tparam(ty, i) == first_ty;
+        }
+
+        // llvm struct
+        if (!all_equal) {
+            std::vector<Type*> el_types(num_params);
+
+            for (size_t i = 0; i < num_params; ++i) {
+                el_types[i] = preferred_llvm_type((jl_datatype_t*)jl_tparam(ty, i), isret);
+                if (!el_types[i]) return NULL;
+            }
+
+            return StructType::get(jl_LLVMContext, el_types, false);
+        }
+
+        // llvm array
+        if (!jl_is_vecelement_type(first_ty)) {
+            auto preferred_el_ty = preferred_llvm_type((jl_datatype_t*)first_ty, isret);
+            if (!preferred_el_ty) return NULL;
+
+            return ArrayType::get(preferred_el_ty, num_params);
+        }
+
+        // llvm vector
+        else {
+            auto preferred_el_ty = preferred_llvm_type((jl_datatype_t*)jl_tparam(first_ty, 0), isret);
+            if (!preferred_el_ty) return NULL;
+
+            return VectorType::get(preferred_el_ty, num_params);
+        }
+
+    }
+
+    // struct -> {...}
+    if (jl_is_structtype(ty)) {
+        auto num_params = jl_datatype_nfields(ty);
+        std::vector<Type*> el_types(num_params);
+
+        for (size_t i = 0; i < num_params; ++i) {
+            el_types[i] = preferred_llvm_type((jl_datatype_t*)jl_field_type(ty, i), isret);
+            if (!el_types[i]) return NULL;
+        }
+
+        return StructType::get(jl_LLVMContext, el_types, false);
+    }
+
     return NULL;
 }
 
